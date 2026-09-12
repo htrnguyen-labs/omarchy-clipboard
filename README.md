@@ -1,5 +1,7 @@
 # Omarchy Clipboard
 
+![Omarchy Clipboard](assets/banner.webp)
+
 A local clipboard-history overlay for [Omarchy](https://omarchy.org/). It is
 opened with `Super+V` and lets you search, pin, copy, paste, or remove recent
 clipboard entries.
