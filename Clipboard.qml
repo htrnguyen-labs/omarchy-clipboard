@@ -2,6 +2,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import QtQuick
+import QtQuick.Controls as Controls
 import qs.Commons
 import qs.Ui
 import "ClipboardHistory.js" as ClipboardHistory
@@ -9,27 +10,16 @@ import "ClipboardHistory.js" as ClipboardHistory
 Item {
   id: root
 
-  readonly property string omarchyBin: "/usr/share/omarchy/bin"
+  property string omarchyPath: Quickshell.env("OMARCHY_PATH")
   property bool opened: false
   property string filterText: ""
   property int selectedIndex: 0
   property bool cursorActive: false
   property bool clearConfirmOpen: false
   property var history: []
-  property var pinned: []
 
   property string historyPath: Quickshell.env("HOME") + "/.local/state/omarchy/clipboard-history.json"
-  property string pinnedPath: Quickshell.env("HOME") + "/.local/state/omarchy/clipboard-pinned.json"
-  readonly property string captureScript: Qt.resolvedUrl("capture.sh").toString().replace(/^file:\/\//, "")
-  readonly property var processEnvironment: ({
-    PATH: "/usr/bin:/bin",
-    HOME: Quickshell.env("HOME"),
-    XDG_STATE_HOME: Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state",
-    XDG_RUNTIME_DIR: Quickshell.env("XDG_RUNTIME_DIR"),
-    WAYLAND_DISPLAY: Quickshell.env("WAYLAND_DISPLAY"),
-    LANG: "C.UTF-8"
-  })
-  property bool stopping: false
+  property string captureScript: root.omarchyPath + "/shell/plugins/clipboard/capture.sh"
   // Shares the [menu] surface tokens — themes that style the menu also
   // style the clipboard. Selected-row colors composed in the
   // singleton so consumers drop them straight into Rectangle bindings.
@@ -48,15 +38,7 @@ Item {
   property int cardWidth: Math.min(Style.space(875), panel.width - Style.gapsOut * 2)
   property int cardHeight: Math.min(Style.space(600), panel.height - Style.gapsOut * 2)
   property int rowHeight: Math.max(Style.space(50), Style.font.body + Style.font.caption + Style.spacing.rowPaddingX * 2)
-  property int historyLimit: 50
-
-  function firstHistoryRowIndex() {
-    for (var i = 0; i < displayModel.count; i++) {
-      var row = displayModel.get(i)
-      if (row.entryType !== "section" && !row.pinned) return i
-    }
-    return -1
-  }
+  property int historyLimit: 300
 
   function open(payloadJson) {
     root.opened = true
@@ -65,12 +47,6 @@ Item {
     root.cursorActive = true
     root.disarmPointer()
     root.rebuildDisplay()
-    // Open with the selection on the history section, not the pinned one.
-    var historyStart = root.firstHistoryRowIndex()
-    if (historyStart >= 0) {
-      root.selectedIndex = historyStart
-      Qt.callLater(function() { resultList.positionViewAtIndex(historyStart, ListView.Contain) })
-    }
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -97,23 +73,8 @@ Item {
     if (root.opened) root.rebuildDisplay()
   }
 
-  function loadPinned(raw) {
-    root.pinned = ClipboardHistory.parseHistory(raw)
-    if (root.opened) root.rebuildDisplay()
-  }
-
-  function savePinned() {
-    pinnedFile.setText(JSON.stringify(root.pinned, null, 2) + "\n")
-    secureState()
-  }
-
   function saveHistory() {
     historyFile.setText(JSON.stringify(root.history.slice(0, root.historyLimit), null, 2) + "\n")
-    secureState()
-  }
-
-  function secureState() {
-    if (!stateSecurityProc.running) stateSecurityProc.running = true
   }
 
   function addClipboardEntry(entry) {
@@ -157,13 +118,8 @@ Item {
 
     var row = displayModel.get(index)
     if (row.entryType === "section") return
-    if (row.pinned) {
-      root.pinned = ClipboardHistory.unpinAt(root.pinned, row.pinnedIndex)
-      root.savePinned()
-    } else {
-      root.history = ClipboardHistory.removeEntryAt(root.history, row.historyIndex)
-      root.saveHistory()
-    }
+    root.history = ClipboardHistory.removeEntryAt(root.history, row.historyIndex)
+    root.saveHistory()
 
     if (displayModel.count <= 1) {
       root.selectedIndex = 0
@@ -178,23 +134,25 @@ Item {
 
   function togglePinIndex(index) {
     if (index < 0 || index >= displayModel.count) return
-
-    var row = displayModel.get(index)
-    if (row.entryType === "section") return
-    if (row.pinned) {
-      root.pinned = ClipboardHistory.unpinAt(root.pinned, row.pinnedIndex)
-    } else {
-      var source = row.historyIndex >= 0 ? root.history[row.historyIndex] : null
-      if (!source) return
-      root.pinned = ClipboardHistory.togglePin(root.pinned, source, root.historyLimit)
-    }
-    root.savePinned()
+    root.history = ClipboardHistory.togglePinAt(root.history, displayModel.get(index).historyIndex)
+    root.saveHistory()
+    root.selectedIndex = 0
     root.disarmPointer()
     root.rebuildDisplay()
   }
 
+  function movePinnedIndex(index, direction) {
+    if (index < 0 || index >= displayModel.count) return
+    var row = displayModel.get(index)
+    if (!row.pinned) return
+    root.history = ClipboardHistory.movePinnedAt(root.history, row.historyIndex, direction)
+    root.saveHistory()
+    root.rebuildDisplay()
+    root.selectedIndex = Math.max(1, Math.min(index + direction, displayModel.count - 1))
+  }
+
   function rebuildDisplay() {
-    var rows = ClipboardHistory.displayRows(root.history, root.pinned, root.filterText, 50)
+    var rows = ClipboardHistory.displayRows(root.history, root.filterText, 50)
 
     displayModel.clear()
     for (var i = 0; i < rows.length; i++) {
@@ -207,22 +165,14 @@ Item {
         path: row.path,
         mime: row.mime,
         historyIndex: row.index,
-        pinnedIndex: row.pinnedIndex,
-        pinned: row.pinned,
-        sectionLabel: row.sectionLabel || "",
-        sectionIcon: row.sectionIcon || "",
-        sectionHint: row.sectionHint || ""
+        pinned: row.pinned
       })
     }
 
     if (displayModel.count === 0) selectedIndex = 0
     else if (selectedIndex >= displayModel.count) selectedIndex = displayModel.count - 1
     else if (selectedIndex < 0) selectedIndex = 0
-    if (displayModel.count > 0 && displayModel.get(selectedIndex).entryType === "section") {
-      var next = selectedIndex + 1
-      if (next >= displayModel.count) next = selectedIndex - 1
-      if (next >= 0 && next < displayModel.count) selectedIndex = next
-    }
+    if (displayModel.count > 0 && displayModel.get(selectedIndex).entryType === "section") selectedIndex++
 
     Qt.callLater(function() {
       if (displayModel.count > 0) resultList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
@@ -237,10 +187,8 @@ Item {
       selectedIndex = delta < 0 ? displayModel.count - 1 : 0
     } else {
       var next = selectedIndex
-      for (var guard = 0; guard < displayModel.count; guard++) {
-        next = (next + delta + displayModel.count) % displayModel.count
-        if (displayModel.get(next).entryType !== "section") break
-      }
+      do next = (next + delta + displayModel.count) % displayModel.count
+      while (displayModel.get(next).entryType === "section")
       selectedIndex = next
     }
     resultList.positionViewAtIndex(selectedIndex, ListView.Contain)
@@ -252,9 +200,8 @@ Item {
     root.cursorActive = true
     root.selectedIndex = Math.max(0, Math.min(index, displayModel.count - 1))
     if (displayModel.get(root.selectedIndex).entryType === "section") {
-      var next = root.selectedIndex + 1
-      if (next >= displayModel.count) next = root.selectedIndex - 1
-      if (next >= 0) root.selectedIndex = next
+      root.selectedIndex = Math.min(root.selectedIndex + 1, displayModel.count - 1)
+      if (displayModel.get(root.selectedIndex).entryType === "section") root.selectedIndex = Math.max(0, root.selectedIndex - 1)
     }
     resultList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
   }
@@ -298,28 +245,13 @@ Item {
     root.openSelected(row)
   }
 
-  function pinnedSourceText(row) {
-    if (!row || !row.pinned || row.pinnedIndex < 0 || row.pinnedIndex >= root.pinned.length) return ""
-    var source = ClipboardHistory.normalizeEntry(root.pinned[row.pinnedIndex])
-    return source && source.type === "text" ? String(source.text || "") : ""
-  }
-
-  function pinnedHistoryIndex(row) {
-    if (!row || !row.pinned) return -1
-    var source = ClipboardHistory.normalizeEntry(root.pinned[row.pinnedIndex])
-    return source ? ClipboardHistory.indexOfKey(root.history, ClipboardHistory.entryKey(source)) : -1
-  }
-
   function applySelected(row) {
     if (!row) return
     root.opened = false
     if (row.entryType === "image") {
-      Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-file", row.mime, row.path])
-    } else if (row.pinned) {
-      var pinnedText = root.pinnedSourceText(row)
-      if (pinnedText) Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-text", "--shift-insert", pinnedText])
+      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", row.mime, row.path])
     } else if (row.fullText) {
-      Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-text", "--shift-insert", "--history-index", String(row.historyIndex)])
+      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--shift-insert", "--history-index", String(row.historyIndex)])
     }
   }
 
@@ -327,36 +259,19 @@ Item {
     if (!row) return
     root.opened = false
     if (row.entryType === "image") {
-      Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-file", "--copy-only", row.mime, row.path])
-    } else if (row.pinned) {
-      var pinnedText = root.pinnedSourceText(row)
-      if (pinnedText) Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-text", "--copy-only", pinnedText])
+      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", "--copy-only", row.mime, row.path])
     } else if (row.fullText) {
-      Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-text", "--copy-only", "--history-index", String(row.historyIndex)])
+      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--copy-only", "--history-index", String(row.historyIndex)])
     }
   }
 
   function openSelected(row) {
     if (!row) return
     root.opened = false
-    if (row.pinned) {
-      var historyIndex = root.pinnedHistoryIndex(row)
-      if (historyIndex >= 0) {
-        Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-open", "--history-index", String(historyIndex)])
-        return
-      }
-      root.copySelected(row)
-      return
-    }
-    Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-open", "--history-index", String(row.historyIndex)])
+    Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-open", "--history-index", String(row.historyIndex)])
   }
 
-  Component.onCompleted: stateSecurityProc.running = true
-  Component.onDestruction: {
-    stopping = true
-    textWatchProc.running = false
-    imageWatchProc.running = false
-  }
+  Component.onCompleted: initProc.running = true
 
   ListModel { id: displayModel }
 
@@ -368,8 +283,7 @@ Item {
   FileView {
     id: historyFile
     path: root.historyPath
-    preload: false
-    watchChanges: false
+    watchChanges: true
     atomicWrites: true
     printErrors: false
     onLoaded: root.loadHistory(text())
@@ -377,26 +291,13 @@ Item {
     onFileChanged: reload()
   }
 
-  FileView {
-    id: pinnedFile
-    path: root.pinnedPath
-    preload: false
-    watchChanges: false
-    atomicWrites: true
-    printErrors: false
-    onLoaded: root.loadPinned(text())
-    onLoadFailed: root.loadPinned("[]")
-    onFileChanged: reload()
-  }
-
+  // Reap watchers left behind by a previous shell instance, then start our
+  // own. The pdeathsig on the watchers makes the kernel kill them whenever
+  // the shell exits, however it exits, so no further lifecycle management.
   Process {
-    id: stateSecurityProc
-    command: [root.captureScript, "secure-state"]
-    clearEnvironment: true
-    environment: root.processEnvironment
+    id: initProc
+    command: ["pkill", "-f", "wl-paste .*--watch .*/shell/plugins/clipboard/capture\\.sh"]
     onExited: {
-      historyFile.reload()
-      pinnedFile.reload()
       currentProc.running = true
       textWatchProc.running = true
       imageWatchProc.running = true
@@ -406,8 +307,6 @@ Item {
   Process {
     id: currentProc
     command: [root.captureScript]
-    clearEnvironment: true
-    environment: root.processEnvironment
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.addClipboardJson(text)
@@ -416,10 +315,8 @@ Item {
 
   Process {
     id: textWatchProc
-    command: ["/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/wl-paste", "--type", "text", "--watch", root.captureScript, "text"]
-    clearEnvironment: true
-    environment: root.processEnvironment
-    onExited: if (!root.stopping) watchRestartTimer.restart()
+    command: ["setpriv", "--pdeathsig", "TERM", "wl-paste", "--type", "text", "--watch", root.captureScript, "text"]
+    onExited: watchRestartTimer.restart()
     stdout: SplitParser {
       onRead: function(data) { root.addClipboardJson(data) }
     }
@@ -427,10 +324,8 @@ Item {
 
   Process {
     id: imageWatchProc
-    command: ["/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/wl-paste", "--type", "image/png", "--watch", root.captureScript, "image/png"]
-    clearEnvironment: true
-    environment: root.processEnvironment
-    onExited: if (!root.stopping) watchRestartTimer.restart()
+    command: ["setpriv", "--pdeathsig", "TERM", "wl-paste", "--type", "image/png", "--watch", root.captureScript, "image/png"]
+    onExited: watchRestartTimer.restart()
     stdout: SplitParser {
       onRead: function(data) { root.addClipboardJson(data) }
     }
@@ -444,8 +339,8 @@ Item {
     interval: 1000
     repeat: false
     onTriggered: {
-      if (!root.stopping && !textWatchProc.running) textWatchProc.running = true
-      if (!root.stopping && !imageWatchProc.running) imageWatchProc.running = true
+      if (!textWatchProc.running) textWatchProc.running = true
+      if (!imageWatchProc.running) imageWatchProc.running = true
     }
   }
 
@@ -575,8 +470,7 @@ Item {
           Text {
             textFormat: Text.PlainText
             anchors.left: parent.left
-            anchors.right: hintText.left
-            anchors.rightMargin: Style.space(14)
+            anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: root.filterText || "Search clipboard…"
             color: root.foreground
@@ -584,18 +478,6 @@ Item {
             font.family: root.fontFamily
             font.pixelSize: Style.font.heading
             elide: Text.ElideRight
-          }
-
-          Text {
-            id: hintText
-            textFormat: Text.PlainText
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Ctrl+P pin"
-            color: root.foreground
-            opacity: 0.45
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
           }
         }
 
@@ -628,87 +510,22 @@ Item {
                   required property string previewText
                   required property string fullText
                   required property string previewImage
-                  required property int historyIndex
-                  required property int pinnedIndex
                   required property bool pinned
-                  required property string sectionLabel
-                  required property string sectionIcon
-                  required property string sectionHint
 
-                  readonly property bool isSection: entryType === "section"
-                  readonly property bool hasCursor: !isSection && root.cursorActive && index === root.selectedIndex
+                  readonly property bool hasCursor: root.cursorActive && index === root.selectedIndex
 
                   width: ListView.view.width
-                  height: isSection ? Style.space(26) : root.rowHeight
-                  radius: isSection ? 0 : root.cornerRadius
-                  color: isSection
-                    ? "transparent"
-                    : (hasCursor ? root.selectedBackground : (pinned ? Util.alpha(Color.accent, 0.07) : "transparent"))
-
-                  Item {
-                    visible: row.isSection
-                    anchors.fill: parent
-                    anchors.leftMargin: Style.space(12)
-                    anchors.rightMargin: Style.space(12)
-
-                    Row {
-                      anchors.left: parent.left
-                      anchors.verticalCenter: parent.verticalCenter
-                      spacing: Style.space(7)
-
-                      Text {
-                        textFormat: Text.PlainText
-                        visible: row.sectionIcon.length > 0
-                        text: row.sectionIcon
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        anchors.verticalCenter: parent.verticalCenter
-                      }
-
-                      Text {
-                        textFormat: Text.PlainText
-                        text: row.sectionLabel.toUpperCase()
-                        color: root.foreground
-                        opacity: 0.55
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        font.letterSpacing: 1.4
-                        font.bold: true
-                        anchors.verticalCenter: parent.verticalCenter
-                      }
-                    }
-
-                    Text {
-                      textFormat: Text.PlainText
-                      visible: row.sectionHint.length > 0
-                      text: row.sectionHint
-                      color: root.foreground
-                      opacity: 0.4
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                      font.italic: true
-                      anchors.right: parent.right
-                      anchors.verticalCenter: parent.verticalCenter
-                    }
-                  }
+                  height: entryType === "section" ? Style.space(34) : root.rowHeight
+                  radius: root.cornerRadius
+                  color: hasCursor ? root.selectedBackground : (pinned ? Util.alpha(root.selectedBackground, 0.32) : "transparent")
 
                   Row {
-                    visible: !row.isSection
                     anchors.fill: parent
                     anchors.leftMargin: Style.space(12)
                     anchors.rightMargin: Style.space(12)
                     anchors.topMargin: Style.space(8)
                     anchors.bottomMargin: Style.space(8)
                     spacing: Style.space(10)
-
-                    Text {
-                      id: pinGlyph
-                      visible: row.pinned
-                      text: "📌"
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                      anchors.verticalCenter: parent.verticalCenter
-                    }
 
                     Image {
                       visible: parent.parent.previewImage.length > 0
@@ -724,7 +541,7 @@ Item {
                       textFormat: Text.PlainText
                       width: parent.width
                         - (parent.parent.previewImage.length > 0 ? parent.height + parent.spacing : 0)
-                        - (pinGlyph.visible ? pinGlyph.width + parent.spacing : 0)
+                        - (pinMark.visible ? pinMark.width + parent.spacing : 0)
                       height: parent.height
                       text: parent.parent.previewText
                       color: parent.parent.hasCursor ? root.selectedText : root.foreground
@@ -735,20 +552,39 @@ Item {
                       wrapMode: Text.NoWrap
                       verticalAlignment: Text.AlignVCenter
                     }
+
+                    Text {
+                      id: pinMark
+                      visible: parent.parent.pinned
+                      text: "📌"
+                      color: parent.parent.hasCursor ? root.selectedText : root.foreground
+                      opacity: 0.72
+                      font.pixelSize: Style.font.caption
+                      anchors.verticalCenter: parent.verticalCenter
+                    }
                   }
 
                   MouseArea {
                     anchors.fill: parent
-                    enabled: !row.isSection
+                    enabled: row.entryType !== "section"
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
                     onPositionChanged: function(mouse) {
                       root.selectFromPointer(row.index, row, mouse)
                     }
-                    onClicked: {
+                    onClicked: function(mouse) {
                       root.cursorActive = true
                       root.selectedIndex = row.index
-                      root.activateIndex(row.index)
+                      if (mouse.button === Qt.RightButton) {
+                        rowMenu.displayIndex = row.index
+                        var point = row.mapToItem(card, mouse.x, mouse.y)
+                        rowMenu.x = point.x
+                        rowMenu.y = point.y
+                        rowMenu.open()
+                      } else {
+                        root.activateIndex(row.index)
+                      }
                     }
                   }
                 }
@@ -800,6 +636,33 @@ Item {
                 asynchronous: true
                 smooth: true
               }
+            }
+          }
+
+          Controls.Menu {
+            id: rowMenu
+            property int displayIndex: -1
+
+            Controls.MenuItem {
+              text: rowMenu.displayIndex >= 0 && displayModel.get(rowMenu.displayIndex).pinned ? "Unpin" : "Pin to top"
+              onTriggered: root.togglePinIndex(rowMenu.displayIndex)
+            }
+            Controls.MenuItem {
+              text: "Move up"
+              enabled: rowMenu.displayIndex > 1 && displayModel.get(rowMenu.displayIndex).pinned
+              onTriggered: root.movePinnedIndex(rowMenu.displayIndex, -1)
+            }
+            Controls.MenuItem {
+              text: "Move down"
+              enabled: rowMenu.displayIndex >= 1
+                && rowMenu.displayIndex + 1 < displayModel.count
+                && displayModel.get(rowMenu.displayIndex).pinned
+                && displayModel.get(rowMenu.displayIndex + 1).pinned
+              onTriggered: root.movePinnedIndex(rowMenu.displayIndex, 1)
+            }
+            Controls.MenuItem {
+              text: "Delete"
+              onTriggered: root.removeDisplayIndex(rowMenu.displayIndex)
             }
           }
 

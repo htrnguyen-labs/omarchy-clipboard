@@ -44,7 +44,7 @@ omarchy-shell shell rescanPlugins
 ## Features
 
 - Search clipboard history
-- Pin entries so they remain at the top
+- Pin entries, separate them from history, and reorder them from the context menu
 - Paste, copy, open, or remove an entry
 - Store text and image clipboard entries
 - Ignore clipboard data marked sensitive by the source application
@@ -61,10 +61,6 @@ History and pinned entries stay on the local machine:
 
 The plugin does not send clipboard data over the network. Clear the history
 from the overlay when it is no longer needed.
-
-To keep the long-running shell bounded, each text entry is limited to 64 KiB,
-each image to 2 MiB, and the image store to 32 MiB. State files are private to
-the current user (`0700` directory, `0600` files).
 
 ## Update
 

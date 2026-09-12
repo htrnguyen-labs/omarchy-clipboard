@@ -1,12 +1,3 @@
-var maxTextChars = 65536
-var maxEntries = 50
-var maxStateChars = 256 * 1024
-
-function withinStateLimit(values, entry) {
-  var next = values.concat([entry])
-  return JSON.stringify(next).length <= maxStateChars
-}
-
 function normalizeEntry(value) {
   if (typeof value === "string")
     return value.trim().length > 0 ? { type: "text", text: value } : null
@@ -16,16 +7,17 @@ function normalizeEntry(value) {
   var type = String(value.type || value.kind || "")
   if (type === "text") {
     var text = String(value.text || "")
-    return text.trim().length > 0 && text.length <= maxTextChars ? { type: "text", text: text } : null
+    return text.trim().length > 0 ? { type: "text", text: text, pinned: value.pinned === true } : null
   }
 
   if (type === "image") {
     var path = String(value.path || "")
-    if (!path || path.length > 1024) return null
+    if (!path) return null
     var entry = {
       type: "image",
       path: path,
-      mime: String(value.mime || "image/png")
+      mime: String(value.mime || "image/png"),
+      pinned: value.pinned === true
     }
     if (value.capturedAt !== undefined && value.capturedAt !== null)
       entry.capturedAt = String(value.capturedAt)
@@ -47,9 +39,9 @@ function parseHistory(raw) {
     var next = []
     if (!Array.isArray(parsed)) return next
 
-    for (var i = 0; i < parsed.length && next.length < maxEntries; i++) {
+    for (var i = 0; i < parsed.length; i++) {
       var entry = normalizeEntry(parsed[i])
-      if (entry && withinStateLimit(next, entry)) next.push(entry)
+      if (entry) next.push(entry)
     }
     return next
   } catch (e) {
@@ -61,20 +53,61 @@ function addEntry(history, entry, limit) {
   var normalized = normalizeEntry(entry)
   var max = limit === undefined || limit === null ? 100 : Number(limit)
   if (isNaN(max)) max = 100
-  max = Math.min(maxEntries, Math.max(0, max))
+  max = Math.max(0, max)
   if (!normalized) return Array.isArray(history) ? history.slice(0, max) : []
   if (max === 0) return []
 
   var key = entryKey(normalized)
-  var next = [normalized]
   var values = Array.isArray(history) ? history : []
+  for (var p = 0; p < values.length; p++) {
+    var prior = normalizeEntry(values[p])
+    if (prior && entryKey(prior) === key) normalized.pinned = prior.pinned
+  }
+  var next = [normalized]
+
+  for (var j = 0; j < values.length && next.length < max; j++) {
+    var pinned = normalizeEntry(values[j])
+    if (!pinned || !pinned.pinned || entryKey(pinned) === key) continue
+    next.push(pinned)
+  }
 
   for (var i = 0; i < values.length && next.length < max; i++) {
     var existing = normalizeEntry(values[i])
-    if (!existing || entryKey(existing) === key) continue
-    if (withinStateLimit(next, existing)) next.push(existing)
+    if (!existing || existing.pinned || entryKey(existing) === key) continue
+    next.push(existing)
   }
 
+  return next
+}
+
+function togglePinAt(history, index) {
+  var next = Array.isArray(history) ? history.slice() : []
+  var target = Number(index)
+  if (isNaN(target) || target < 0 || target >= next.length) return next
+  var entry = normalizeEntry(next[target])
+  if (!entry) return next
+  entry.pinned = !entry.pinned
+  next[target] = entry
+  next.sort(function(a, b) { return Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) })
+  return next
+}
+
+function movePinnedAt(history, index, direction) {
+  var next = Array.isArray(history) ? history.slice() : []
+  var target = Number(index)
+  var step = Number(direction) < 0 ? -1 : 1
+  if (isNaN(target) || target < 0 || target >= next.length) return next
+  var entry = normalizeEntry(next[target])
+  if (!entry || !entry.pinned) return next
+
+  for (var i = target + step; i >= 0 && i < next.length; i += step) {
+    var neighbor = normalizeEntry(next[i])
+    if (!neighbor || !neighbor.pinned) continue
+    var swap = next[target]
+    next[target] = next[i]
+    next[i] = swap
+    break
+  }
   return next
 }
 
@@ -86,31 +119,6 @@ function removeEntryAt(history, index) {
   var next = values.slice()
   next.splice(target, 1)
   return next
-}
-
-function indexOfKey(entries, key) {
-  var values = Array.isArray(entries) ? entries : []
-  for (var i = 0; i < values.length; i++) {
-    var existing = normalizeEntry(values[i])
-    if (existing && entryKey(existing) === key) return i
-  }
-  return -1
-}
-
-function togglePin(pinned, entry, limit) {
-  var normalized = normalizeEntry(entry)
-  if (!normalized) return Array.isArray(pinned) ? pinned.slice() : []
-
-  var key = entryKey(normalized)
-  var values = Array.isArray(pinned) ? pinned.slice() : []
-  var at = indexOfKey(values, key)
-  if (at >= 0) values.splice(at, 1)
-  else if (withinStateLimit(values, normalized)) values.push(normalized)
-  return values.slice(0, Math.min(maxEntries, Math.max(0, Number(limit) || maxEntries)))
-}
-
-function unpinAt(pinned, index) {
-  return removeEntryAt(pinned, index)
 }
 
 function clearHistory() {
@@ -205,26 +213,8 @@ function cappedEntry(entry) {
   return { type: "text", text: entry.text.slice(0, cut > 0 ? cut : displayTextLimit) }
 }
 
-function sectionRow(label, icon, hint) {
-  return {
-    entryType: "section",
-    sectionLabel: String(label || ""),
-    sectionIcon: String(icon || ""),
-    sectionHint: String(hint || ""),
-    fullText: "",
-    previewText: "",
-    previewImage: "",
-    path: "",
-    mime: "",
-    index: -1,
-    pinnedIndex: -1,
-    pinned: false
-  }
-}
-
-function displayRows(history, pinned, query, limit) {
+function displayRows(history, query, limit) {
   var values = Array.isArray(history) ? history : []
-  var saved = Array.isArray(pinned) ? pinned : []
   var needle = String(query || "").trim().toLowerCase()
   var max = limit === undefined || limit === null ? 50 : Number(limit)
   if (isNaN(max)) max = 50
@@ -234,54 +224,40 @@ function displayRows(history, pinned, query, limit) {
   var pinnedRows = []
   var historyRows = []
 
-  for (var p = 0; p < saved.length; p++) {
-    var pinnedEntry = cappedEntry(normalizeEntry(saved[p]))
-    if (!pinnedEntry) continue
-    if (needle && searchableText(pinnedEntry).toLowerCase().indexOf(needle) < 0) continue
-    pinnedRows.push(buildRow(pinnedEntry, -1, p, true))
-  }
-
-  for (var i = 0; i < values.length && historyRows.length < max; i++) {
+  for (var i = 0; i < values.length; i++) {
     var entry = cappedEntry(normalizeEntry(values[i]))
     if (!entry) continue
-    // A pinned copy already represents this entry in the list.
-    if (indexOfKey(saved, entryKey(entry)) >= 0) continue
     if (needle && searchableText(entry).toLowerCase().indexOf(needle) < 0) continue
 
-    historyRows.push(buildRow(entry, i, -1, false))
+    var paths = filePaths(entry)
+    var isFile = paths.length > 0
+    var isImage = entry.type === "image"
+    var previewPath = isImage ? String(entry.path || "") : (isFile && paths.length === 1 && isImagePath(paths[0]) ? paths[0] : "")
+    var row = {
+      entryType: isFile ? "file" : entry.type,
+      fullText: isImage ? "" : fullText(entry),
+      previewText: previewText(entry),
+      previewImage: previewPath,
+      path: isImage ? String(entry.path || "") : (isFile && paths.length === 1 ? paths[0] : ""),
+      mime: isImage ? String(entry.mime || "image/png") : "text/plain",
+      index: i,
+      pinned: entry.pinned === true
+    }
+    if (entry.pinned) pinnedRows.push(row)
+    else historyRows.push(row)
+    if (pinnedRows.length + historyRows.length >= max) break
   }
 
-  if (pinnedRows.length === 0 && historyRows.length === 0) return []
-
   var rows = []
-  rows.push(sectionRow("Pinned", "\uD83D\uDCCC", pinnedRows.length === 0 ? "press Ctrl+P to pin" : ""))
-  rows = rows.concat(pinnedRows)
-  if (historyRows.length > 0) {
-    rows.push(sectionRow("History", "\uD83D\uDD58", ""))
+  if (pinnedRows.length) {
+    rows.push({ entryType: "section", previewText: "📌  Pinned", fullText: "", previewImage: "", path: "", mime: "", index: -1, pinned: false })
+    rows = rows.concat(pinnedRows)
+  }
+  if (historyRows.length) {
+    rows.push({ entryType: "section", previewText: "History", fullText: "", previewImage: "", path: "", mime: "", index: -1, pinned: false })
     rows = rows.concat(historyRows)
   }
   return rows
-}
-
-function buildRow(entry, historyIndex, pinnedIndex, isPinned) {
-  var paths = filePaths(entry)
-  var isFile = paths.length > 0
-  var isImage = entry.type === "image"
-  var previewPath = isImage ? String(entry.path || "") : (isFile && paths.length === 1 && isImagePath(paths[0]) ? paths[0] : "")
-  return {
-    entryType: isFile ? "file" : entry.type,
-    fullText: isImage ? "" : fullText(entry),
-    previewText: previewText(entry),
-    previewImage: previewPath,
-    path: isImage ? String(entry.path || "") : (isFile && paths.length === 1 ? paths[0] : ""),
-    mime: isImage ? String(entry.mime || "image/png") : "text/plain",
-    index: historyIndex,
-    pinnedIndex: pinnedIndex,
-    pinned: isPinned,
-    sectionLabel: "",
-    sectionIcon: "",
-    sectionHint: ""
-  }
 }
 
 if (typeof module !== "undefined") {
@@ -291,9 +267,8 @@ if (typeof module !== "undefined") {
     parseHistory: parseHistory,
     addEntry: addEntry,
     removeEntryAt: removeEntryAt,
-    indexOfKey: indexOfKey,
-    togglePin: togglePin,
-    unpinAt: unpinAt,
+    togglePinAt: togglePinAt,
+    movePinnedAt: movePinnedAt,
     clearHistory: clearHistory,
     parseEntryJson: parseEntryJson,
     searchableText: searchableText,

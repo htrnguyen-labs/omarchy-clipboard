@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "nguyenn.clipboard",
   "name": "Omarchy Clipboard",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "author": "Ha Trong Nguyen",
   "description": "Search, pin, and paste local clipboard history.",
   "kinds": [
