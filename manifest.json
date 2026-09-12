@@ -3,7 +3,7 @@
   "id": "nguyenn.clipboard",
   "name": "My Clipboard",
   "version": "1.0.0",
-  "author": "Omarchy",
+  "author": "Ha Trong Nguyen",
   "description": "A clipboard manager to view and paste history",
   "kinds": [
     "overlay"
