@@ -1,3 +1,6 @@
+var maxTextChars = 65536
+var maxEntries = 50
+
 function normalizeEntry(value) {
   if (typeof value === "string")
     return value.trim().length > 0 ? { type: "text", text: value } : null
@@ -7,12 +10,12 @@ function normalizeEntry(value) {
   var type = String(value.type || value.kind || "")
   if (type === "text") {
     var text = String(value.text || "")
-    return text.trim().length > 0 ? { type: "text", text: text } : null
+    return text.trim().length > 0 && text.length <= maxTextChars ? { type: "text", text: text } : null
   }
 
   if (type === "image") {
     var path = String(value.path || "")
-    if (!path) return null
+    if (!path || path.length > 1024) return null
     var entry = {
       type: "image",
       path: path,
@@ -38,7 +41,7 @@ function parseHistory(raw) {
     var next = []
     if (!Array.isArray(parsed)) return next
 
-    for (var i = 0; i < parsed.length; i++) {
+    for (var i = 0; i < parsed.length && next.length < maxEntries; i++) {
       var entry = normalizeEntry(parsed[i])
       if (entry) next.push(entry)
     }
@@ -52,7 +55,7 @@ function addEntry(history, entry, limit) {
   var normalized = normalizeEntry(entry)
   var max = limit === undefined || limit === null ? 100 : Number(limit)
   if (isNaN(max)) max = 100
-  max = Math.max(0, max)
+  max = Math.min(maxEntries, Math.max(0, max))
   if (!normalized) return Array.isArray(history) ? history.slice(0, max) : []
   if (max === 0) return []
 
@@ -88,7 +91,7 @@ function indexOfKey(entries, key) {
   return -1
 }
 
-function togglePin(pinned, entry) {
+function togglePin(pinned, entry, limit) {
   var normalized = normalizeEntry(entry)
   if (!normalized) return Array.isArray(pinned) ? pinned.slice() : []
 
@@ -97,7 +100,7 @@ function togglePin(pinned, entry) {
   var at = indexOfKey(values, key)
   if (at >= 0) values.splice(at, 1)
   else values.push(normalized)
-  return values
+  return values.slice(0, Math.min(maxEntries, Math.max(0, Number(limit) || maxEntries)))
 }
 
 function unpinAt(pinned, index) {

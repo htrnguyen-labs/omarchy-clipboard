@@ -9,7 +9,7 @@ import "ClipboardHistory.js" as ClipboardHistory
 Item {
   id: root
 
-  property string omarchyPath: Quickshell.env("OMARCHY_PATH")
+  readonly property string omarchyBin: "/usr/share/omarchy/bin"
   property bool opened: false
   property string filterText: ""
   property int selectedIndex: 0
@@ -20,7 +20,16 @@ Item {
 
   property string historyPath: Quickshell.env("HOME") + "/.local/state/omarchy/clipboard-history.json"
   property string pinnedPath: Quickshell.env("HOME") + "/.local/state/omarchy/clipboard-pinned.json"
-  property string captureScript: root.omarchyPath + "/shell/plugins/clipboard/capture.sh"
+  readonly property string captureScript: Qt.resolvedUrl("capture.sh").toString().replace(/^file:\/\//, "")
+  readonly property var processEnvironment: ({
+    PATH: "/usr/bin:/bin",
+    HOME: Quickshell.env("HOME"),
+    XDG_STATE_HOME: Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state",
+    XDG_RUNTIME_DIR: Quickshell.env("XDG_RUNTIME_DIR"),
+    WAYLAND_DISPLAY: Quickshell.env("WAYLAND_DISPLAY"),
+    LANG: "C.UTF-8"
+  })
+  property bool stopping: false
   // Shares the [menu] surface tokens — themes that style the menu also
   // style the clipboard. Selected-row colors composed in the
   // singleton so consumers drop them straight into Rectangle bindings.
@@ -39,7 +48,7 @@ Item {
   property int cardWidth: Math.min(Style.space(875), panel.width - Style.gapsOut * 2)
   property int cardHeight: Math.min(Style.space(600), panel.height - Style.gapsOut * 2)
   property int rowHeight: Math.max(Style.space(50), Style.font.body + Style.font.caption + Style.spacing.rowPaddingX * 2)
-  property int historyLimit: 300
+  property int historyLimit: 50
 
   function firstHistoryRowIndex() {
     for (var i = 0; i < displayModel.count; i++) {
@@ -95,10 +104,16 @@ Item {
 
   function savePinned() {
     pinnedFile.setText(JSON.stringify(root.pinned, null, 2) + "\n")
+    secureState()
   }
 
   function saveHistory() {
     historyFile.setText(JSON.stringify(root.history.slice(0, root.historyLimit), null, 2) + "\n")
+    secureState()
+  }
+
+  function secureState() {
+    if (!stateSecurityProc.running) stateSecurityProc.running = true
   }
 
   function addClipboardEntry(entry) {
@@ -171,7 +186,7 @@ Item {
     } else {
       var source = row.historyIndex >= 0 ? root.history[row.historyIndex] : null
       if (!source) return
-      root.pinned = ClipboardHistory.togglePin(root.pinned, source)
+      root.pinned = ClipboardHistory.togglePin(root.pinned, source, root.historyLimit)
     }
     root.savePinned()
     root.disarmPointer()
@@ -299,12 +314,12 @@ Item {
     if (!row) return
     root.opened = false
     if (row.entryType === "image") {
-      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", row.mime, row.path])
+      Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-file", row.mime, row.path])
     } else if (row.pinned) {
       var pinnedText = root.pinnedSourceText(row)
-      if (pinnedText) Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--shift-insert", pinnedText])
+      if (pinnedText) Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-text", "--shift-insert", pinnedText])
     } else if (row.fullText) {
-      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--shift-insert", "--history-index", String(row.historyIndex)])
+      Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-text", "--shift-insert", "--history-index", String(row.historyIndex)])
     }
   }
 
@@ -312,12 +327,12 @@ Item {
     if (!row) return
     root.opened = false
     if (row.entryType === "image") {
-      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", "--copy-only", row.mime, row.path])
+      Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-file", "--copy-only", row.mime, row.path])
     } else if (row.pinned) {
       var pinnedText = root.pinnedSourceText(row)
-      if (pinnedText) Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--copy-only", pinnedText])
+      if (pinnedText) Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-text", "--copy-only", pinnedText])
     } else if (row.fullText) {
-      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--copy-only", "--history-index", String(row.historyIndex)])
+      Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-text", "--copy-only", "--history-index", String(row.historyIndex)])
     }
   }
 
@@ -327,16 +342,21 @@ Item {
     if (row.pinned) {
       var historyIndex = root.pinnedHistoryIndex(row)
       if (historyIndex >= 0) {
-        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-open", "--history-index", String(historyIndex)])
+        Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-open", "--history-index", String(historyIndex)])
         return
       }
       root.copySelected(row)
       return
     }
-    Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-open", "--history-index", String(row.historyIndex)])
+    Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-open", "--history-index", String(row.historyIndex)])
   }
 
-  Component.onCompleted: initProc.running = true
+  Component.onCompleted: stateSecurityProc.running = true
+  Component.onDestruction: {
+    stopping = true
+    textWatchProc.running = false
+    imageWatchProc.running = false
+  }
 
   ListModel { id: displayModel }
 
@@ -348,7 +368,8 @@ Item {
   FileView {
     id: historyFile
     path: root.historyPath
-    watchChanges: true
+    preload: false
+    watchChanges: false
     atomicWrites: true
     printErrors: false
     onLoaded: root.loadHistory(text())
@@ -359,7 +380,8 @@ Item {
   FileView {
     id: pinnedFile
     path: root.pinnedPath
-    watchChanges: true
+    preload: false
+    watchChanges: false
     atomicWrites: true
     printErrors: false
     onLoaded: root.loadPinned(text())
@@ -367,13 +389,14 @@ Item {
     onFileChanged: reload()
   }
 
-  // Reap watchers left behind by a previous shell instance, then start our
-  // own. The pdeathsig on the watchers makes the kernel kill them whenever
-  // the shell exits, however it exits, so no further lifecycle management.
   Process {
-    id: initProc
-    command: ["pkill", "-f", "wl-paste .*--watch .*/shell/plugins/clipboard/capture\\.sh"]
+    id: stateSecurityProc
+    command: [root.captureScript, "secure-state"]
+    clearEnvironment: true
+    environment: root.processEnvironment
     onExited: {
+      historyFile.reload()
+      pinnedFile.reload()
       currentProc.running = true
       textWatchProc.running = true
       imageWatchProc.running = true
@@ -383,6 +406,8 @@ Item {
   Process {
     id: currentProc
     command: [root.captureScript]
+    clearEnvironment: true
+    environment: root.processEnvironment
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.addClipboardJson(text)
@@ -391,8 +416,10 @@ Item {
 
   Process {
     id: textWatchProc
-    command: ["setpriv", "--pdeathsig", "TERM", "wl-paste", "--type", "text", "--watch", root.captureScript, "text"]
-    onExited: watchRestartTimer.restart()
+    command: ["/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/wl-paste", "--type", "text", "--watch", root.captureScript, "text"]
+    clearEnvironment: true
+    environment: root.processEnvironment
+    onExited: if (!root.stopping) watchRestartTimer.restart()
     stdout: SplitParser {
       onRead: function(data) { root.addClipboardJson(data) }
     }
@@ -400,8 +427,10 @@ Item {
 
   Process {
     id: imageWatchProc
-    command: ["setpriv", "--pdeathsig", "TERM", "wl-paste", "--type", "image/png", "--watch", root.captureScript, "image/png"]
-    onExited: watchRestartTimer.restart()
+    command: ["/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/wl-paste", "--type", "image/png", "--watch", root.captureScript, "image/png"]
+    clearEnvironment: true
+    environment: root.processEnvironment
+    onExited: if (!root.stopping) watchRestartTimer.restart()
     stdout: SplitParser {
       onRead: function(data) { root.addClipboardJson(data) }
     }
@@ -415,8 +444,8 @@ Item {
     interval: 1000
     repeat: false
     onTriggered: {
-      if (!textWatchProc.running) textWatchProc.running = true
-      if (!imageWatchProc.running) imageWatchProc.running = true
+      if (!root.stopping && !textWatchProc.running) textWatchProc.running = true
+      if (!root.stopping && !imageWatchProc.running) imageWatchProc.running = true
     }
   }
 
