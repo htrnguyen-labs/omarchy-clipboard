@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""Bounded, no-follow clipboard state and image storage."""
+
+import hashlib
+import json
+import os
+import secrets
+import stat
+import sys
+
+MAX_STATE = 256 * 1024
+MAX_IMAGE = 2 * 1024 * 1024
+MAX_IMAGES = 32 * 1024 * 1024
+UID = os.getuid()
+STATE = os.path.abspath(os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "omarchy"))
+IMAGES = os.path.join(STATE, "clipboard-images")
+HISTORY = "clipboard-history.json"
+
+
+def open_dir(path, private=False):
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in [p for p in path.split("/") if p]:
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            except FileNotFoundError:
+                os.mkdir(part, 0o700, dir_fd=fd)
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            st = os.fstat(child)
+            if st.st_uid not in (0, UID):
+                os.close(child)
+                raise OSError("directory owner")
+            os.close(fd)
+            fd = child
+        if private:
+            os.fchmod(fd, 0o700)
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def read_at(dfd, name, limit):
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dfd)
+    except FileNotFoundError:
+        return b"[]"
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != UID or st.st_size > limit:
+            raise OSError("unsafe state file")
+        data = os.read(fd, limit + 1)
+        if len(data) > limit:
+            raise OSError("state limit")
+        return data or b"[]"
+    finally:
+        os.close(fd)
+
+
+def atomic_write(dfd, name, data):
+    tmp = ".clipboard-" + secrets.token_hex(12)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dfd)
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.rename(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+        os.fsync(dfd)
+    except Exception:
+        os.unlink(tmp, dir_fd=dfd)
+        raise
+
+
+def history_refs(dfd):
+    try:
+        rows = json.loads(read_at(dfd, HISTORY, MAX_STATE))
+    except (ValueError, OSError):
+        return set()
+    return {os.path.basename(row.get("path", "")) for row in rows if isinstance(row, dict) and row.get("type") == "image"}
+
+
+def prune(dfd, ifd):
+    refs = history_refs(dfd)
+    total = 0
+    for name in os.listdir(ifd):
+        try:
+            st = os.stat(name, dir_fd=ifd, follow_symlinks=False)
+            if not stat.S_ISREG(st.st_mode) or name not in refs:
+                os.unlink(name, dir_fd=ifd)
+            else:
+                total += st.st_size
+        except FileNotFoundError:
+            pass
+    return total
+
+
+def main():
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    dfd = open_dir(STATE, private=True)
+    try:
+        if mode == "read":
+            data = read_at(dfd, HISTORY, MAX_STATE)
+            rows = json.loads(data)
+            if not isinstance(rows, list):
+                raise ValueError("history must be an array")
+            sys.stdout.write(json.dumps(rows, separators=(",", ":")))
+        elif mode == "write":
+            data = sys.stdin.buffer.readline(MAX_STATE + 2).rstrip(b"\n")
+            if len(data) > MAX_STATE or not isinstance(json.loads(data), list):
+                raise ValueError("invalid history")
+            atomic_write(dfd, HISTORY, data)
+            ifd = open_dir(IMAGES, private=True)
+            try:
+                prune(dfd, ifd)
+            finally:
+                os.close(ifd)
+        elif mode == "image":
+            mime = sys.argv[2]
+            data = sys.stdin.buffer.read(MAX_IMAGE + 1)
+            if not data or len(data) > MAX_IMAGE:
+                return 2
+            ifd = open_dir(IMAGES, private=True)
+            try:
+                total = prune(dfd, ifd)
+                if total + len(data) > MAX_IMAGES:
+                    return 2
+                ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "image/bmp": "bmp", "image/tiff": "tiff"}.get(mime)
+                if not ext:
+                    return 2
+                name = hashlib.sha256(data).hexdigest() + "." + ext
+                try:
+                    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=ifd)
+                except FileExistsError:
+                    fd = -1
+                if fd >= 0:
+                    try:
+                        os.write(fd, data)
+                        os.fsync(fd)
+                    finally:
+                        os.close(fd)
+                path = os.path.join(IMAGES, name)
+                print(json.dumps({"type": "image", "mime": mime, "path": path}, separators=(",", ":")))
+            finally:
+                os.close(ifd)
+        else:
+            return 2
+    finally:
+        os.close(dfd)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

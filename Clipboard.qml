@@ -10,7 +10,7 @@ import "ClipboardHistory.js" as ClipboardHistory
 Item {
   id: root
 
-  property string omarchyPath: Quickshell.env("OMARCHY_PATH")
+  readonly property string omarchyBin: "/usr/share/omarchy/bin"
   property bool opened: false
   property string filterText: ""
   property int selectedIndex: 0
@@ -18,8 +18,20 @@ Item {
   property bool clearConfirmOpen: false
   property var history: []
 
-  property string historyPath: Quickshell.env("HOME") + "/.local/state/omarchy/clipboard-history.json"
-  property string captureScript: root.omarchyPath + "/shell/plugins/clipboard/capture.sh"
+  readonly property string pluginDir: decodeURIComponent(Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, ""))
+  readonly property string captureScript: pluginDir + "/capture.sh"
+  readonly property string stateHelper: pluginDir + "/clipboard-state"
+  readonly property var processEnvironment: ({
+    PATH: "/usr/bin:/bin",
+    HOME: Quickshell.env("HOME"),
+    XDG_STATE_HOME: Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state",
+    XDG_RUNTIME_DIR: Quickshell.env("XDG_RUNTIME_DIR"),
+    WAYLAND_DISPLAY: Quickshell.env("WAYLAND_DISPLAY"),
+    LANG: "C.UTF-8"
+  })
+  property string pendingState: ""
+  property bool captureStarted: false
+  property bool stopping: false
   // Shares the [menu] surface tokens — themes that style the menu also
   // style the clipboard. Selected-row colors composed in the
   // singleton so consumers drop them straight into Rectangle bindings.
@@ -74,7 +86,23 @@ Item {
   }
 
   function saveHistory() {
-    historyFile.setText(JSON.stringify(root.history.slice(0, root.historyLimit), null, 2) + "\n")
+    root.pendingState = JSON.stringify(root.history.slice(0, root.historyLimit))
+    root.flushState()
+  }
+
+  function flushState() {
+    if (stateWriteProc.running || !root.pendingState) return
+    stateWriteProc.payload = root.pendingState
+    root.pendingState = ""
+    stateWriteProc.running = true
+  }
+
+  function startCapture() {
+    if (root.captureStarted) return
+    root.captureStarted = true
+    currentProc.running = true
+    textWatchProc.running = true
+    imageWatchProc.running = true
   }
 
   function addClipboardEntry(entry) {
@@ -249,9 +277,9 @@ Item {
     if (!row) return
     root.opened = false
     if (row.entryType === "image") {
-      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", row.mime, row.path])
+      Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-file", row.mime, row.path])
     } else if (row.fullText) {
-      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--shift-insert", "--history-index", String(row.historyIndex)])
+      Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-text", "--shift-insert", "--history-index", String(row.historyIndex)])
     }
   }
 
@@ -259,19 +287,24 @@ Item {
     if (!row) return
     root.opened = false
     if (row.entryType === "image") {
-      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", "--copy-only", row.mime, row.path])
+      Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-file", "--copy-only", row.mime, row.path])
     } else if (row.fullText) {
-      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--copy-only", "--history-index", String(row.historyIndex)])
+      Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-paste-text", "--copy-only", "--history-index", String(row.historyIndex)])
     }
   }
 
   function openSelected(row) {
     if (!row) return
     root.opened = false
-    Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-open", "--history-index", String(row.historyIndex)])
+    Quickshell.execDetached([root.omarchyBin + "/omarchy-clipboard-open", "--history-index", String(row.historyIndex)])
   }
 
-  Component.onCompleted: initProc.running = true
+  Component.onCompleted: stateReadProc.running = true
+  Component.onDestruction: {
+    root.stopping = true
+    textWatchProc.running = false
+    imageWatchProc.running = false
+  }
 
   ListModel { id: displayModel }
 
@@ -280,33 +313,39 @@ Item {
     referenceItem: card
   }
 
-  FileView {
-    id: historyFile
-    path: root.historyPath
-    watchChanges: true
-    atomicWrites: true
-    printErrors: false
-    onLoaded: root.loadHistory(text())
-    onLoadFailed: root.loadHistory("[]")
-    onFileChanged: reload()
+  Process {
+    id: stateReadProc
+    command: ["/usr/bin/python3", root.stateHelper, "read"]
+    clearEnvironment: true
+    environment: root.processEnvironment
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.loadHistory(text)
+        root.startCapture()
+      }
+    }
   }
 
-  // Reap watchers left behind by a previous shell instance, then start our
-  // own. The pdeathsig on the watchers makes the kernel kill them whenever
-  // the shell exits, however it exits, so no further lifecycle management.
   Process {
-    id: initProc
-    command: ["pkill", "-f", "wl-paste .*--watch .*/shell/plugins/clipboard/capture\\.sh"]
-    onExited: {
-      currentProc.running = true
-      textWatchProc.running = true
-      imageWatchProc.running = true
+    id: stateWriteProc
+    property string payload: ""
+    command: ["/usr/bin/python3", root.stateHelper, "write"]
+    stdinEnabled: true
+    clearEnvironment: true
+    environment: root.processEnvironment
+    onStarted: {
+      write(payload + "\n")
+      payload = ""
     }
+    onExited: root.flushState()
   }
 
   Process {
     id: currentProc
     command: [root.captureScript]
+    clearEnvironment: true
+    environment: root.processEnvironment
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.addClipboardJson(text)
@@ -315,8 +354,10 @@ Item {
 
   Process {
     id: textWatchProc
-    command: ["setpriv", "--pdeathsig", "TERM", "wl-paste", "--type", "text", "--watch", root.captureScript, "text"]
-    onExited: watchRestartTimer.restart()
+    command: ["/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/wl-paste", "--type", "text", "--watch", root.captureScript, "text"]
+    clearEnvironment: true
+    environment: root.processEnvironment
+    onExited: if (!root.stopping) watchRestartTimer.restart()
     stdout: SplitParser {
       onRead: function(data) { root.addClipboardJson(data) }
     }
@@ -324,8 +365,10 @@ Item {
 
   Process {
     id: imageWatchProc
-    command: ["setpriv", "--pdeathsig", "TERM", "wl-paste", "--type", "image/png", "--watch", root.captureScript, "image/png"]
-    onExited: watchRestartTimer.restart()
+    command: ["/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/wl-paste", "--type", "image/png", "--watch", root.captureScript, "image/png"]
+    clearEnvironment: true
+    environment: root.processEnvironment
+    onExited: if (!root.stopping) watchRestartTimer.restart()
     stdout: SplitParser {
       onRead: function(data) { root.addClipboardJson(data) }
     }
@@ -339,8 +382,8 @@ Item {
     interval: 1000
     repeat: false
     onTriggered: {
-      if (!textWatchProc.running) textWatchProc.running = true
-      if (!imageWatchProc.running) imageWatchProc.running = true
+      if (!root.stopping && !textWatchProc.running) textWatchProc.running = true
+      if (!root.stopping && !imageWatchProc.running) imageWatchProc.running = true
     }
   }
 

@@ -1,3 +1,11 @@
+var maxTextChars = 65536
+var maxEntries = 300
+var maxStateChars = 60 * 1024
+
+function withinStateLimit(values, entry) {
+  return JSON.stringify(values.concat([entry])).length <= maxStateChars
+}
+
 function normalizeEntry(value) {
   if (typeof value === "string")
     return value.trim().length > 0 ? { type: "text", text: value } : null
@@ -7,12 +15,12 @@ function normalizeEntry(value) {
   var type = String(value.type || value.kind || "")
   if (type === "text") {
     var text = String(value.text || "")
-    return text.trim().length > 0 ? { type: "text", text: text, pinned: value.pinned === true } : null
+    return text.trim().length > 0 && text.length <= maxTextChars ? { type: "text", text: text, pinned: value.pinned === true } : null
   }
 
   if (type === "image") {
     var path = String(value.path || "")
-    if (!path) return null
+    if (!path || path.length > 1024) return null
     var entry = {
       type: "image",
       path: path,
@@ -39,9 +47,9 @@ function parseHistory(raw) {
     var next = []
     if (!Array.isArray(parsed)) return next
 
-    for (var i = 0; i < parsed.length; i++) {
+    for (var i = 0; i < parsed.length && next.length < maxEntries; i++) {
       var entry = normalizeEntry(parsed[i])
-      if (entry) next.push(entry)
+      if (entry && withinStateLimit(next, entry)) next.push(entry)
     }
     return next
   } catch (e) {
@@ -53,9 +61,10 @@ function addEntry(history, entry, limit) {
   var normalized = normalizeEntry(entry)
   var max = limit === undefined || limit === null ? 100 : Number(limit)
   if (isNaN(max)) max = 100
-  max = Math.max(0, max)
+  max = Math.min(maxEntries, Math.max(0, max))
   if (!normalized) return Array.isArray(history) ? history.slice(0, max) : []
   if (max === 0) return []
+  if (!withinStateLimit([], normalized)) return Array.isArray(history) ? history.slice(0, max) : []
 
   var key = entryKey(normalized)
   var values = Array.isArray(history) ? history : []
@@ -68,13 +77,13 @@ function addEntry(history, entry, limit) {
   for (var j = 0; j < values.length && next.length < max; j++) {
     var pinned = normalizeEntry(values[j])
     if (!pinned || !pinned.pinned || entryKey(pinned) === key) continue
-    next.push(pinned)
+    if (withinStateLimit(next, pinned)) next.push(pinned)
   }
 
   for (var i = 0; i < values.length && next.length < max; i++) {
     var existing = normalizeEntry(values[i])
     if (!existing || existing.pinned || entryKey(existing) === key) continue
-    next.push(existing)
+    if (withinStateLimit(next, existing)) next.push(existing)
   }
 
   return next
@@ -210,7 +219,7 @@ function cappedEntry(entry) {
 
   // Cut on a line break so a file:// URI never truncates into a bogus path.
   var cut = entry.text.lastIndexOf("\n", displayTextLimit)
-  return { type: "text", text: entry.text.slice(0, cut > 0 ? cut : displayTextLimit) }
+  return { type: "text", text: entry.text.slice(0, cut > 0 ? cut : displayTextLimit), pinned: entry.pinned === true }
 }
 
 function displayRows(history, query, limit) {

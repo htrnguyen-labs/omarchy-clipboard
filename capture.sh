@@ -6,46 +6,24 @@
 
 set -o pipefail
 
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
-IMAGE_DIR="$STATE_DIR/clipboard-images"
-mkdir -p "$IMAGE_DIR"
+STATE_HELPER="${0%/*}/clipboard-state"
+MAX_TEXT_BYTES=65536
+[[ $STATE_HELPER == /* && -f $STATE_HELPER && ! -L $STATE_HELPER ]] || exit 0
 
-types=$(wl-paste --list-types 2>/dev/null || true)
+types=$(/usr/bin/wl-paste --list-types 2>/dev/null || true)
 
 if [[ ${CLIPBOARD_STATE:-} == "sensitive" ]] || grep -qx 'x-kde-passwordManagerHint' <<<"$types"; then
   exit 0
 fi
 
 emit_image() {
-  local mime="$1"
-  local ext tmp hash file
-
-  ext=${mime#image/}
-  [[ $ext == jpeg ]] && ext=jpg
-
-  tmp=$(mktemp --tmpdir="$IMAGE_DIR" clipboard.XXXXXX) || return 0
-  cat >"$tmp"
-  if [[ ! -s $tmp ]]; then
-    rm -f "$tmp"
-    return 0
-  fi
-
-  hash=$(sha256sum "$tmp" | awk '{print $1}')
-  file="$IMAGE_DIR/$hash.$ext"
-  if [[ -e $file ]]; then
-    rm -f "$tmp"
-  else
-    mv "$tmp" "$file"
-  fi
-
-  jq -cn --arg mime "$mime" --arg path "$file" --arg captured_at "$(date +'%A %H:%M')" \
-    '{type:"image", mime:$mime, path:$path, capturedAt:$captured_at}'
+  /usr/bin/python3 "$STATE_HELPER" image "$1"
 }
 
 emit_text() {
-  perl -MEncode=decode,FB_CROAK,LEAVE_SRC -MJSON::PP=encode_json -0777 -e '
+  /usr/bin/head -c "$((MAX_TEXT_BYTES + 1))" | /usr/bin/perl -MEncode=decode,FB_CROAK,LEAVE_SRC -MJSON::PP=encode_json -0777 -e '
     my $raw = <STDIN>;
-    exit unless length $raw;
+    exit unless length $raw && length($raw) <= $ARGV[0];
 
     my $encoding;
     my $heuristic_encoding = 0;
@@ -86,7 +64,7 @@ emit_text() {
     }
     $text = decode("UTF-8", $raw) unless defined $text;
     print "{\"type\":\"text\",\"text\":", encode_json($text), "}\n";
-  '
+  ' "$MAX_TEXT_BYTES"
 }
 
 case "${1:-}" in
@@ -96,11 +74,11 @@ esac
 
 for mime in image/png image/jpeg image/webp image/gif image/bmp image/tiff; do
   if grep -qx "$mime" <<<"$types"; then
-    timeout 2s wl-paste --type "$mime" 2>/dev/null | emit_image "$mime"
+    /usr/bin/timeout 2s /usr/bin/wl-paste --type "$mime" 2>/dev/null | emit_image "$mime"
     exit 0
   fi
 done
 
 if grep -q '^text/' <<<"$types" || grep -qx 'UTF8_STRING' <<<"$types" || grep -qx 'STRING' <<<"$types"; then
-  wl-paste --type text --no-newline 2>/dev/null | emit_text
+  /usr/bin/wl-paste --type text --no-newline 2>/dev/null | emit_text
 fi

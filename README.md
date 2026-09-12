@@ -9,7 +9,7 @@ clipboard entries.
 ## Requirements
 
 - Omarchy with Quickshell plugin support
-- Standard Omarchy clipboard tools (`wl-clipboard`, `jq`, Perl, and coreutils)
+- Standard Omarchy clipboard tools (`wl-clipboard`, Python 3, Perl, and coreutils)
 
 ## Install
 
@@ -61,6 +61,11 @@ History and pinned entries stay on the local machine:
 
 The plugin does not send clipboard data over the network. Clear the history
 from the overlay when it is no longer needed.
+
+Clipboard state is capped at 256 KiB, text entries at 64 KiB, images at 2 MiB,
+and the image store at 32 MiB. State is written through a no-follow directory
+FD using private permissions, `fsync`, and atomic rename; orphaned images are
+removed after history updates.
 
 ## Update
 
