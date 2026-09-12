@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "id": "nguyenn.clipboard",
-  "name": "My Clipboard",
+  "name": "Omarchy Clipboard",
   "version": "1.0.0",
   "author": "Ha Trong Nguyen",
-  "description": "A clipboard manager to view and paste history",
+  "description": "Search, pin, and paste local clipboard history.",
   "kinds": [
     "overlay"
   ],

@@ -6,6 +6,11 @@ A local clipboard-history overlay for [Omarchy](https://omarchy.org/). It is
 opened with `Super+V` and lets you search, pin, copy, paste, or remove recent
 clipboard entries.
 
+## Requirements
+
+- Omarchy with Quickshell plugin support
+- Standard Omarchy clipboard tools (`wl-clipboard`, `jq`, Perl, and coreutils)
+
 ## Install
 
 ```bash
@@ -26,6 +31,15 @@ not appear immediately, run:
 ```bash
 omarchy-shell shell rescanPlugins
 ```
+
+## Usage
+
+- `Super+V` or `Super+Shift+V`: open or close history
+- Type to filter; use Up/Down and Enter to select and paste
+- `Shift+Enter`: copy the selected entry without pasting
+- `Ctrl+P`: pin or unpin the selected entry
+- `Delete`: remove the selected entry
+- `Escape`: close the overlay
 
 ## Features
 
@@ -48,6 +62,25 @@ History and pinned entries stay on the local machine:
 The plugin does not send clipboard data over the network. Clear the history
 from the overlay when it is no longer needed.
 
+## Update
+
+```bash
+omarchy plugin update nguyenn.clipboard --yes
+```
+
+## Removal
+
+```bash
+omarchy plugin remove nguyenn.clipboard --yes
+```
+
+Remove the two `Super+V` bindings added during installation. To restore the
+built-in clipboard plugin, run:
+
+```bash
+omarchy plugin enable omarchy.clipboard
+```
+
 ## Development
 
 Validate the plugin after making a change:
@@ -56,7 +89,6 @@ Validate the plugin after making a change:
 omarchy plugin validate ~/.config/omarchy/plugins/nguyenn.clipboard
 ```
 
-## Credits and license
+## License
 
-Maintained by Ha Trong Nguyen. This plugin is based on Omarchy's clipboard
-plugin and is distributed under the upstream MIT license.
+MIT. The plugin includes Omarchy-derived code; see [LICENSE](LICENSE).
