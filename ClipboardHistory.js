@@ -1,5 +1,11 @@
 var maxTextChars = 65536
 var maxEntries = 50
+var maxStateChars = 256 * 1024
+
+function withinStateLimit(values, entry) {
+  var next = values.concat([entry])
+  return JSON.stringify(next).length <= maxStateChars
+}
 
 function normalizeEntry(value) {
   if (typeof value === "string")
@@ -43,7 +49,7 @@ function parseHistory(raw) {
 
     for (var i = 0; i < parsed.length && next.length < maxEntries; i++) {
       var entry = normalizeEntry(parsed[i])
-      if (entry) next.push(entry)
+      if (entry && withinStateLimit(next, entry)) next.push(entry)
     }
     return next
   } catch (e) {
@@ -66,7 +72,7 @@ function addEntry(history, entry, limit) {
   for (var i = 0; i < values.length && next.length < max; i++) {
     var existing = normalizeEntry(values[i])
     if (!existing || entryKey(existing) === key) continue
-    next.push(existing)
+    if (withinStateLimit(next, existing)) next.push(existing)
   }
 
   return next
@@ -99,7 +105,7 @@ function togglePin(pinned, entry, limit) {
   var values = Array.isArray(pinned) ? pinned.slice() : []
   var at = indexOfKey(values, key)
   if (at >= 0) values.splice(at, 1)
-  else values.push(normalized)
+  else if (withinStateLimit(values, normalized)) values.push(normalized)
   return values.slice(0, Math.min(maxEntries, Math.max(0, Number(limit) || maxEntries)))
 }
 
