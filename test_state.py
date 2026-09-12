@@ -21,7 +21,8 @@ def run(env, *args, data=None, check=True):
 
 
 def main():
-    with tempfile.TemporaryDirectory() as tmp:
+    test_parent = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~")
+    with tempfile.TemporaryDirectory(dir=test_parent) as tmp:
         base = pathlib.Path(tmp)
         env = {"HOME": str(base), "XDG_STATE_HOME": str(base / "state")}
         payload = json.dumps([{"type": "text", "text": "important", "pinned": True}])
@@ -54,6 +55,24 @@ def main():
         linked.symlink_to(real, target_is_directory=True)
         bad_env = {"HOME": str(base), "XDG_STATE_HOME": str(linked)}
         assert run(bad_env, "read", check=False).returncode != 0
+
+        unsafe_home = base / "unsafe-home"
+        unsafe_home.mkdir(mode=0o770)
+        unsafe_home.chmod(0o770)
+        unsafe_home_env = {"HOME": str(unsafe_home)}
+        assert run(unsafe_home_env, "read", check=False).returncode != 0
+
+        unsafe_middle = base / "unsafe-middle"
+        unsafe_middle.mkdir(mode=0o770)
+        unsafe_middle.chmod(0o770)
+        unsafe_middle_env = {"HOME": str(base), "XDG_STATE_HOME": str(unsafe_middle / "state")}
+        assert run(unsafe_middle_env, "read", check=False).returncode != 0
+
+        unsafe_leaf = base / "unsafe-leaf"
+        (unsafe_leaf / "omarchy").mkdir(parents=True, mode=0o770)
+        (unsafe_leaf / "omarchy").chmod(0o770)
+        unsafe_leaf_env = {"HOME": str(base), "XDG_STATE_HOME": str(unsafe_leaf)}
+        assert run(unsafe_leaf_env, "read", check=False).returncode != 0
 
 
 if __name__ == "__main__":

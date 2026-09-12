@@ -27,12 +27,14 @@ def open_dir(path, private=False):
                 os.mkdir(part, 0o700, dir_fd=fd)
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
             st = os.fstat(child)
-            if st.st_uid not in (0, UID):
+            if st.st_uid not in (0, UID) or st.st_mode & 0o022:
                 os.close(child)
-                raise OSError("directory owner")
+                raise OSError("unsafe directory")
             os.close(fd)
             fd = child
         if private:
+            if st.st_uid != UID:
+                raise OSError("private directory owner")
             os.fchmod(fd, 0o700)
         return fd
     except Exception:

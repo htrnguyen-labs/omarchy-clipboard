@@ -65,7 +65,8 @@ from the overlay when it is no longer needed.
 Clipboard state is capped at 256 KiB, text entries at 64 KiB, images at 2 MiB,
 and the image store at 32 MiB. State is written through a no-follow directory
 FD using private permissions, `fsync`, and atomic rename; orphaned images are
-removed after history updates.
+removed after history updates. Writable group/other path components are
+rejected before state is read or written.
 
 ## Update
 
