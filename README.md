@@ -66,7 +66,8 @@ Clipboard state is capped at 256 KiB, text entries at 64 KiB, images at 2 MiB,
 and the image store at 32 MiB. State is written through a no-follow directory
 FD using private permissions, `fsync`, and atomic rename; orphaned images are
 removed after history updates. Writable group/other path components are
-rejected before state is read or written.
+rejected before state is read or written. QML caps raw child-process output;
+finite jobs and persistent watchers run under bounded `timeout` process groups.
 
 ## Update
 
@@ -93,6 +94,8 @@ Validate the plugin after making a change:
 
 ```bash
 omarchy plugin validate ~/.config/omarchy/plugins/nguyenn.clipboard
+./test_state.py
+node test_stream_guard.js
 ```
 
 ## License

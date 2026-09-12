@@ -8,11 +8,16 @@ set -o pipefail
 
 STATE_HELPER="${0%/*}/clipboard-state"
 MAX_TEXT_BYTES=65536
+MAX_TYPES_BYTES=8192
 [[ $STATE_HELPER == /* && -f $STATE_HELPER && ! -L $STATE_HELPER ]] || exit 0
 
-types=$(/usr/bin/wl-paste --list-types 2>/dev/null || true)
+types=$(
+  /usr/bin/timeout --signal=TERM --kill-after=1s 2s /usr/bin/wl-paste --list-types 2>/dev/null |
+    /usr/bin/head -c "$((MAX_TYPES_BYTES + 1))"
+) || exit 0
+(( ${#types} <= MAX_TYPES_BYTES )) || exit 0
 
-if [[ ${CLIPBOARD_STATE:-} == "sensitive" ]] || grep -qx 'x-kde-passwordManagerHint' <<<"$types"; then
+if [[ ${CLIPBOARD_STATE:-} == "sensitive" ]] || /usr/bin/grep -qx 'x-kde-passwordManagerHint' <<<"$types"; then
   exit 0
 fi
 
@@ -73,12 +78,12 @@ image/*) emit_image "$1"; exit 0 ;;
 esac
 
 for mime in image/png image/jpeg image/webp image/gif image/bmp image/tiff; do
-  if grep -qx "$mime" <<<"$types"; then
+  if /usr/bin/grep -qx "$mime" <<<"$types"; then
     /usr/bin/timeout 2s /usr/bin/wl-paste --type "$mime" 2>/dev/null | emit_image "$mime"
     exit 0
   fi
 done
 
-if grep -q '^text/' <<<"$types" || grep -qx 'UTF8_STRING' <<<"$types" || grep -qx 'STRING' <<<"$types"; then
+if /usr/bin/grep -q '^text/' <<<"$types" || /usr/bin/grep -qx 'UTF8_STRING' <<<"$types" || /usr/bin/grep -qx 'STRING' <<<"$types"; then
   /usr/bin/wl-paste --type text --no-newline 2>/dev/null | emit_text
 fi

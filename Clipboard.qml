@@ -6,6 +6,7 @@ import QtQuick.Controls as Controls
 import qs.Commons
 import qs.Ui
 import "ClipboardHistory.js" as ClipboardHistory
+import "StreamGuard.js" as StreamGuard
 
 Item {
   id: root
@@ -32,6 +33,9 @@ Item {
   property string pendingState: ""
   property bool captureStarted: false
   property bool stopping: false
+  readonly property int finiteOutputLimit: 262144
+  readonly property int watcherOutputLimit: 262144
+  readonly property int watcherLineLimit: 70000
   // Shares the [menu] surface tokens — themes that style the menu also
   // style the clipboard. Selected-row colors composed in the
   // singleton so consumers drop them straight into Rectangle bindings.
@@ -315,13 +319,20 @@ Item {
 
   Process {
     id: stateReadProc
-    command: ["/usr/bin/python3", root.stateHelper, "read"]
+    property bool overflow: false
+    command: ["/usr/bin/timeout", "--signal=TERM", "--kill-after=1s", "3s", "/usr/bin/python3", root.stateHelper, "read"]
     clearEnvironment: true
     environment: root.processEnvironment
+    onStarted: overflow = false
     stdout: StdioCollector {
-      waitForEnd: true
+      id: stateReadOut
+      waitForEnd: false
+      onDataChanged: if (data.byteLength > root.finiteOutputLimit) {
+        stateReadProc.overflow = true
+        stateReadProc.signal(15)
+      }
       onStreamFinished: {
-        root.loadHistory(text)
+        root.loadHistory(stateReadProc.overflow ? "[]" : text)
         root.startCapture()
       }
     }
@@ -330,7 +341,7 @@ Item {
   Process {
     id: stateWriteProc
     property string payload: ""
-    command: ["/usr/bin/python3", root.stateHelper, "write"]
+    command: ["/usr/bin/timeout", "--signal=TERM", "--kill-after=1s", "3s", "/usr/bin/python3", root.stateHelper, "write"]
     stdinEnabled: true
     clearEnvironment: true
     environment: root.processEnvironment
@@ -343,34 +354,65 @@ Item {
 
   Process {
     id: currentProc
-    command: [root.captureScript]
+    property bool overflow: false
+    command: ["/usr/bin/timeout", "--signal=TERM", "--kill-after=1s", "5s", root.captureScript]
     clearEnvironment: true
     environment: root.processEnvironment
+    onStarted: overflow = false
     stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.addClipboardJson(text)
+      id: currentOut
+      waitForEnd: false
+      onDataChanged: if (data.byteLength > root.finiteOutputLimit) {
+        currentProc.overflow = true
+        currentProc.signal(15)
+      }
+      onStreamFinished: if (!currentProc.overflow) root.addClipboardJson(text)
     }
   }
 
   Process {
     id: textWatchProc
-    command: ["/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/wl-paste", "--type", "text", "--watch", root.captureScript, "text"]
+    command: ["/usr/bin/timeout", "--signal=TERM", "--kill-after=1s", "1h", "/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/wl-paste", "--type", "text", "--watch", root.captureScript, "text"]
     clearEnvironment: true
     environment: root.processEnvironment
+    onStarted: textWatchOut.guardState = { offset: textWatchOut.text.length, pending: "" }
     onExited: if (!root.stopping) watchRestartTimer.restart()
-    stdout: SplitParser {
-      onRead: function(data) { root.addClipboardJson(data) }
+    stdout: StdioCollector {
+      id: textWatchOut
+      property var guardState: StreamGuard.empty()
+      waitForEnd: false
+      onDataChanged: {
+        var result = StreamGuard.consume(guardState, text, data.byteLength, root.watcherOutputLimit, root.watcherLineLimit)
+        guardState = result.state
+        if (result.overflow) {
+          textWatchProc.signal(15)
+          return
+        }
+        for (var i = 0; i < result.lines.length; i++) root.addClipboardJson(result.lines[i])
+      }
     }
   }
 
   Process {
     id: imageWatchProc
-    command: ["/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/wl-paste", "--type", "image/png", "--watch", root.captureScript, "image/png"]
+    command: ["/usr/bin/timeout", "--signal=TERM", "--kill-after=1s", "1h", "/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/wl-paste", "--type", "image/png", "--watch", root.captureScript, "image/png"]
     clearEnvironment: true
     environment: root.processEnvironment
+    onStarted: imageWatchOut.guardState = { offset: imageWatchOut.text.length, pending: "" }
     onExited: if (!root.stopping) watchRestartTimer.restart()
-    stdout: SplitParser {
-      onRead: function(data) { root.addClipboardJson(data) }
+    stdout: StdioCollector {
+      id: imageWatchOut
+      property var guardState: StreamGuard.empty()
+      waitForEnd: false
+      onDataChanged: {
+        var result = StreamGuard.consume(guardState, text, data.byteLength, root.watcherOutputLimit, root.watcherLineLimit)
+        guardState = result.state
+        if (result.overflow) {
+          imageWatchProc.signal(15)
+          return
+        }
+        for (var i = 0; i < result.lines.length; i++) root.addClipboardJson(result.lines[i])
+      }
     }
   }
 
