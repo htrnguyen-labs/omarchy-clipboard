@@ -36,23 +36,25 @@ Item {
   readonly property int finiteOutputLimit: 262144
   readonly property int watcherOutputLimit: 262144
   readonly property int watcherLineLimit: 70000
-  // Shares the [menu] surface tokens — themes that style the menu also
-  // style the clipboard. Selected-row colors composed in the
-  // singleton so consumers drop them straight into Rectangle bindings.
-  property color background: Color.menu.background
-  property color foreground: Color.menu.text
-  property color border: Color.menu.border
-  property var borderSpec: Border.surfaceSpec("menu", "border", border, Math.max(1, Style.space(2)))
-  property color scrim: Color.menu.scrim
-  property color selectedBackground: Color.menu.selectedBackground
-  property color selectedText: Color.menu.selectedText
-  readonly property int cornerRadius: Style.cornerRadius
+  readonly property bool darkMode: Color.background.r * 0.2126 + Color.background.g * 0.7152 + Color.background.b * 0.0722 < 0.5
+  property color background: darkMode ? "#090d12" : "#f7f9fb"
+  property color foreground: darkMode ? "#dce4ed" : "#18212b"
+  property color muted: darkMode ? "#788595" : "#667281"
+  property color border: darkMode ? "#27313b" : "#d7dde5"
+  property color panelSurface: darkMode ? "#0d1218" : "#ffffff"
+  property color raisedSurface: darkMode ? "#111820" : "#f0f3f7"
+  property color accent: darkMode ? "#ff4d43" : "#df3f38"
+  property var borderSpec: Border.surfaceSpec("menu", "border", border, 1)
+  property color scrim: darkMode ? "#c0000000" : "#66000000"
+  property color selectedBackground: darkMode ? "#25303b" : "#e9eef5"
+  property color selectedText: darkMode ? "#ffffff" : "#111820"
+  readonly property int cornerRadius: Math.max(Style.cornerRadius, Style.space(10))
   property string fontFamily: Style.font.menuFamily
   property int contentMargin: Style.spacing.panelPadding
-  property int headerHeight: Math.max(Style.space(34), Style.font.title + Style.spacing.controlPaddingY * 2)
+  property int headerHeight: Math.max(Style.space(54), Style.font.title + Style.spacing.controlPaddingY * 2)
   property int contentSpacing: Style.spacing.md
-  property int cardWidth: Math.min(Style.space(875), panel.width - Style.gapsOut * 2)
-  property int cardHeight: Math.min(Style.space(600), panel.height - Style.gapsOut * 2)
+  property int cardWidth: Math.min(Style.space(940), panel.width - Style.gapsOut * 2)
+  property int cardHeight: Math.min(Style.space(620), panel.height - Style.gapsOut * 2)
   property int rowHeight: Math.max(Style.space(50), Style.font.body + Style.font.caption + Style.spacing.rowPaddingX * 2)
   property int historyLimit: 300
 
@@ -207,7 +209,7 @@ Item {
     if (displayModel.count > 0 && displayModel.get(selectedIndex).entryType === "section") selectedIndex++
 
     Qt.callLater(function() {
-      if (displayModel.count > 0) resultList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
+      if (displayModel.count > 0) resultList.positionViewAtIndex(root.selectedIndex <= 1 ? 0 : root.selectedIndex, root.selectedIndex <= 1 ? ListView.Beginning : ListView.Contain)
     })
   }
 
@@ -550,19 +552,44 @@ Item {
           width: parent.width
           height: root.headerHeight
           radius: root.cornerRadius
-          color: "transparent"
+          color: root.raisedSurface
+          border.width: 1
+          border.color: root.border
 
-          Text {
-            textFormat: Text.PlainText
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            text: root.filterText || "Search clipboard…"
-            color: root.foreground
-            opacity: root.filterText ? 1 : 0.58
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.heading
-            elide: Text.ElideRight
+          Row {
+            anchors.fill: parent
+            anchors.leftMargin: Style.space(16)
+            anchors.rightMargin: Style.space(16)
+            spacing: Style.space(12)
+
+            Text {
+              id: searchIcon
+              anchors.verticalCenter: parent.verticalCenter
+              text: "⌕"
+              color: root.muted
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.heading
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width - searchIcon.width - searchShortcut.width - parent.spacing * 2
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.filterText || "Search clipboard…"
+              color: root.filterText ? root.foreground : root.muted
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.heading
+              elide: Text.ElideRight
+            }
+
+            Text {
+              id: searchShortcut
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Ctrl + P  pin"
+              color: root.muted
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
           }
         }
 
@@ -572,17 +599,22 @@ Item {
 
           Row {
             anchors.fill: parent
-            spacing: 0
+            spacing: root.contentSpacing
 
-            Item {
-              width: parent.width / 2
+            Rectangle {
+              id: listSurface
+              width: (parent.width - parent.spacing) * 0.52
               height: parent.height
               clip: true
+              radius: root.cornerRadius
+              color: root.panelSurface
+              border.width: 1
+              border.color: root.border
 
               ListView {
                 id: resultList
                 anchors.fill: parent
-                anchors.rightMargin: root.contentMargin
+                anchors.margins: Style.space(8)
                 model: displayModel
                 clip: true
                 spacing: Style.space(4)
@@ -602,7 +634,9 @@ Item {
                   width: ListView.view.width
                   height: entryType === "section" ? Style.space(34) : root.rowHeight
                   radius: root.cornerRadius
-                  color: hasCursor ? root.selectedBackground : (pinned ? Util.alpha(root.selectedBackground, 0.32) : "transparent")
+                  color: entryType === "section"
+                    ? "transparent"
+                    : (hasCursor ? root.selectedBackground : (pinned ? Util.alpha(root.accent, 0.12) : "transparent"))
 
                   Row {
                     anchors.fill: parent
@@ -611,6 +645,15 @@ Item {
                     anchors.topMargin: Style.space(8)
                     anchors.bottomMargin: Style.space(8)
                     spacing: Style.space(10)
+
+                    Rectangle {
+                      visible: parent.parent.entryType === "section"
+                      width: visible ? Style.space(3) : 0
+                      height: Style.space(14)
+                      radius: width / 2
+                      anchors.verticalCenter: parent.verticalCenter
+                      color: parent.parent.previewText.indexOf("Pinned") >= 0 ? root.accent : root.muted
+                    }
 
                     Image {
                       visible: parent.parent.previewImage.length > 0
@@ -623,15 +666,32 @@ Item {
                     }
 
                     Text {
+                      visible: parent.parent.entryType !== "section" && parent.parent.previewImage.length === 0
+                      width: visible ? Style.space(18) : 0
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: parent.parent.entryType === "file" ? "↗" : "▤"
+                      color: parent.parent.pinned ? root.accent : root.muted
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                    }
+
+                    Text {
                       textFormat: Text.PlainText
                       width: parent.width
+                        - (parent.parent.entryType === "section" ? Style.space(3) + parent.spacing : 0)
                         - (parent.parent.previewImage.length > 0 ? parent.height + parent.spacing : 0)
+                        - (parent.parent.entryType !== "section" && parent.parent.previewImage.length === 0 ? Style.space(18) + parent.spacing : 0)
                         - (pinMark.visible ? pinMark.width + parent.spacing : 0)
                       height: parent.height
                       text: parent.parent.previewText
-                      color: parent.parent.hasCursor ? root.selectedText : root.foreground
+                      color: parent.parent.entryType === "section"
+                        ? (parent.parent.previewText.indexOf("Pinned") >= 0 ? root.accent : root.muted)
+                        : (parent.parent.hasCursor ? root.selectedText : root.foreground)
                       font.family: root.fontFamily
-                      font.pixelSize: Style.font.title
+                      font.pixelSize: parent.parent.entryType === "section" ? Style.font.caption : Style.font.title
+                      font.weight: parent.parent.entryType === "section" ? Font.DemiBold : Font.Normal
+                      font.capitalization: parent.parent.entryType === "section" ? Font.AllUppercase : Font.MixedCase
+                      font.letterSpacing: parent.parent.entryType === "section" ? 1.6 : 0
                       opacity: parent.parent.entryType === "image" || parent.parent.entryType === "file" ? 0.72 : 1.0
                       elide: Text.ElideRight
                       wrapMode: Text.NoWrap
@@ -642,9 +702,9 @@ Item {
                       id: pinMark
                       visible: parent.parent.pinned
                       text: "📌"
-                      color: parent.parent.hasCursor ? root.selectedText : root.foreground
-                      opacity: 0.72
-                      font.pixelSize: Style.font.caption
+                      color: root.accent
+                      opacity: 1
+                      font.pixelSize: Style.font.body
                       anchors.verticalCenter: parent.verticalCenter
                     }
                   }
@@ -676,29 +736,34 @@ Item {
               }
             }
 
-            Item {
-              width: parent.width / 2
+            Rectangle {
+              id: previewSurface
+              width: parent.width - listSurface.width - parent.spacing
               height: parent.height
               clip: true
+              radius: root.cornerRadius
+              color: root.panelSurface
+              border.width: 1
+              border.color: root.border
 
               property var activeRow: displayModel.count > 0 && root.selectedIndex >= 0 && root.selectedIndex < displayModel.count ? displayModel.get(root.selectedIndex) : null
 
-              Rectangle {
-                anchors.left: parent.left
+              Text {
+                visible: parent.activeRow && parent.activeRow.pinned
                 anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                width: Style.normalBorderWidth
-                color: Util.alpha(root.border, 0.28)
+                anchors.right: parent.right
+                anchors.margins: Style.space(18)
+                text: "📌"
+                color: root.accent
+                font.pixelSize: Style.font.heading
               }
 
               Text {
                 textFormat: Text.PlainText
                 visible: parent.activeRow && !parent.activeRow.previewImage
                 anchors.fill: parent
-                anchors.leftMargin: root.contentMargin
-                anchors.rightMargin: 0
-                anchors.topMargin: 0
-                anchors.bottomMargin: 0
+                anchors.margins: Style.space(20)
+                anchors.topMargin: Style.space(54)
                 text: parent.activeRow ? parent.activeRow.fullText : ""
                 color: root.foreground
                 font.family: root.fontFamily
@@ -711,15 +776,22 @@ Item {
               Image {
                 visible: parent.activeRow && parent.activeRow.previewImage
                 anchors.fill: parent
-                anchors.leftMargin: root.contentMargin
-                anchors.rightMargin: 0
-                anchors.topMargin: 0
-                anchors.bottomMargin: 0
+                anchors.margins: Style.space(20)
+                anchors.topMargin: Style.space(54)
                 source: parent.activeRow ? parent.activeRow.previewImage : ""
                 fillMode: Image.PreserveAspectFit
                 verticalAlignment: Image.AlignTop
                 asynchronous: true
                 smooth: true
+              }
+
+              Text {
+                visible: !parent.activeRow || parent.activeRow.entryType === "section"
+                anchors.centerIn: parent
+                text: "Select an item to preview"
+                color: root.muted
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
               }
             }
           }
